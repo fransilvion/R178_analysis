@@ -1,0 +1,264 @@
+---
+title: "RNAcocktail_analysis"
+author: "German Novakovskiy"
+date: "June 9, 2018"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# RNA-seq analysis with DESeq2
+
+```{r}
+suppressMessages(suppressWarnings(library(dplyr)))
+suppressMessages(suppressWarnings(library(knitr)))
+suppressMessages(suppressWarnings(library(tximport)))
+suppressMessages(suppressWarnings(library(DESeq2)))
+suppressMessages(suppressWarnings(library(edgeR)))
+suppressMessages(suppressWarnings(library(tibble)))
+suppressMessages(suppressWarnings(library(reshape2)))
+suppressMessages(suppressWarnings(library(ggplot2)))
+suppressMessages(suppressWarnings(library(RColorBrewer)))
+suppressMessages(suppressWarnings(library(ermineR)))
+suppressMessages(suppressWarnings(library(tidyverse)))
+suppressMessages(suppressWarnings(library(tximport)))
+suppressMessages(suppressWarnings(library(readr)))
+suppressMessages(suppressWarnings(library(tximportData)))
+suppressMessages(suppressWarnings(library(GenomicFeatures)))
+suppressMessages(suppressWarnings(library(biomaRt)))
+suppressMessages(suppressWarnings(library(gplots)))
+```
+
+## Running RNAcocktail with SALMON-SMEM
+
+For running delete all comment symbols (#) except the first line (I used version 67 from ensembl website; new version 92 is available). 
+
+```{bash}
+#!/bin/bash
+
+#samples=($(ls raw_reads))
+
+#for i in "${samples[@]}"
+#do
+        #TEST1=$(ls raw_reads/"$i"/*R1* | tr '\n' ' ' | \
+        #awk '{for(i=1;i<=NF;i++){printf $i;if(i<NF)printf ","}}')
+
+        #TEST2=$(ls raw_reads/"$i"/*R2* | tr '\n' ' ' | \
+        #awk '{for(i=1;i<=NF;i++){printf $i;if(i<NF)printf ","}}')
+
+        #run_rnacocktail.py quantify --quantifier_idx human_transcriptome_19_index/ --1 $TEST1 --2 $TEST2 \
+        #--libtype ISR --salmon_k 19 --outdir salmon_out --workdir salmon_work --sample $i --unzip
+
+        #echo '\n'
+        #echo '\n'
+        #echo "Done with $i"
+        #echo '\n'
+        #echo '\n'
+#done
+```
+
+## Analysis of quant data with DESeq2
+
+```{r}
+#metadata construction
+samples <- c("Ctl1-1", "Ctl1-2", "Ctl2-1", "Ctl2-2", "VAN-011-1", "VAN-011-2",
+             "VAN-012-1", "VAN-012-2", "VAN-013-1", "VAN-013-2", "VAN0092", "VAN3360091")
+sex <- c("M", "M", "M", "M", "F", "F", "F", "F", "M", "M", "F", "F")
+national <- c("Caucasian", "Caucasian", "Asian", "Asian",
+              "Caucasian", "Caucasian", "Caucasian", "Caucasian",
+              "Caucasian", "Caucasian", "Caucasian", "Caucasian")
+relation <- c("NoFamily", "NoFamily", "NoFamily", "NoFamily",
+              "Family", "Family", "Family", "Family",
+              "Family", "Family", "Family", "Family")
+
+#1 is affected, 0 if not
+affected <- c(0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1)
+metadata <- data.frame(Samples = samples, National = national,
+                       Relation = relation, Sex = sex, Affected = affected)
+metadata$Affected <- as.factor(metadata$Affected)
+rownames(metadata) <- samples
+metadata
+```
+```{r}
+#files, output from Salmon-SMEM
+dir <- "~/RNA-seq_Cynthia/salmon_out"
+files <- file.path(dir,"salmon_smem", metadata$Samples, "quant.sf")
+files
+```
+
+Using tximport package to load Salmon data:
+```{r}
+names(files) <- metadata$Samples
+TxDb <- makeTxDbFromGFF(file = "genes_19.gtf")
+k <- keys(TxDb, keytype = "TXNAME")
+tx2gene <- select(TxDb, k, "GENEID", "TXNAME")
+head(tx2gene)
+```
+```{r}
+txi <- tximport(files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = TRUE)
+```
+
+Let's construct a DESeqDataSet from the txi object and sample information in metadata:
+```{r}
+ddsTxi <- DESeqDataSetFromTximport(txi,
+                                   colData = metadata,
+                                   design = ~ Sex + Affected)
+```
+
+## Pre-filtering
+
+Filtering of low-expressed genes
+```{r}
+keep <- rowSums(counts(ddsTxi)) >= 10
+ddsTxi <- ddsTxi[keep,]
+dim(counts(ddsTxi))
+```
+
+## Collapsing technical replicates
+
+We have technical replicates for each individual:
+
+```{r}
+ddsTxi$Samples <- factor(c("Ctl1", "Ctl1", "Ctl2", "Ctl2", "VAN-011", "VAN-011", "VAN-012", "VAN-012", "VAN-013", "VAN-013", "VAN0092", "VAN0092"))
+ddsTxi$Run <- paste0("run",1:12)
+colData(ddsTxi)
+```
+
+```{r}
+#sum up technical replicates
+ddsTxi <- collapseReplicates(ddsTxi, ddsTxi$Samples, ddsTxi$Run)
+colData(ddsTxi)
+```
+
+## Differential expression
+
+```{r}
+#actual DE analysis
+ddsTxi <- DESeq(ddsTxi)
+res <- results(ddsTxi, name="Affected_1_vs_0")
+res
+```
+```{r}
+#adjusted p-value threshold
+res05 <- results(ddsTxi, alpha=0.05)
+summary(res05)
+```
+
+Only 59 genes are up-regulated, while 43 are down-regulated.
+
+```{r}
+sum(res05$padj < 0.05, na.rm=TRUE)
+```
+
+Examine plot of p-values:
+```{r}
+hist(res$pvalue, breaks=50, col="grey")
+```
+
+
+## Log fold change shrinkage for visualization and ranking
+
+Shrinkage of effect size (LFC estimates) is useful for visualization and ranking of genes. To shrink the LFC, we pass the dds object to the function lfcShrink. Below we specify to use the apeglm method for effect size shrinkage (Zhu, Ibrahim, and Love 2018), which improves on the previous estimator.
+```{r}
+resultsNames(ddsTxi)
+```
+```{r}
+resLFC <- lfcShrink(ddsTxi, coef="Affected_1_vs_0", type="apeglm")
+resLFC
+```
+
+## MA plot
+
+The function plotMA shows the log2 fold changes attributable to a given variable over the mean of normalized counts for all the samples in the DESeqDataSet. Points will be colored red if the adjusted p value is less than 0.05 (for this threshold). Points which fall out of the window are plotted as open triangles pointing either up or down. (https://support.bioconductor.org/p/93148/) 
+
+```{r}
+plotMA(res, alpha = 0.05, ylim=c(-12,12))
+```
+
+It is more useful visualize the MA-plot for the shrunken log2 fold changes, which remove the noise associated with log2 fold changes from low count genes without requiring arbitrary filtering thresholds.
+(The large fold changes from genes with lots of statistical information are not shrunk, while the imprecise fold changes are shrunk).
+```{r}
+plotMA(resLFC, ylim=c(-4,4), main = "apeglm")
+```
+We probably see the plot like this, because nearly all genes have no change of expression and there is little to no variation across replicates (so near technical replication); the same pattern was found by limma. And we have small number of genes with very large fold changes (see the above plot). 
+
+We can do LFC shrinkage with different methods, but apeglm is considered to be better (I didn't go deep into this). For comparison shrinkage with other methods:
+```{r}
+resLFCnormal <- lfcShrink(ddsTxi, coef="Affected_1_vs_0", type="normal")
+plotMA(resLFCnormal, ylim=c(-4,4), main = "normal")
+```
+```{r}
+resLFCashr <- lfcShrink(ddsTxi, coef="Affected_1_vs_0", type="ashr")
+plotMA(resLFCashr, ylim=c(-4,4), main = "ashr")
+```
+
+Count plot of one gene with the lowest adjusted (multiple test correction) pvalue (remember, 0 is unaffected, 1 is affected):
+```{r}
+plotCounts(ddsTxi, gene=which.min(res$padj), intgroup="Affected")
+```
+ENSG00000233841 is a HLA-C gene. (set returnData=TRUE for custom plots)
+
+## Some pictures
+
+```{r}
+plotDispEsts(ddsTxi, main="Dispersion plot")
+```
+```{r}
+#Regularized log transformation for clustering/heatmaps, etc
+#produces transformed data on the log2 scale which has been normalized with 
+#respect to library size or other normalization factors.
+rld <- rlogTransformation(ddsTxi)
+head(assay(rld))
+```
+```{r}
+hist(assay(rld))
+```
+```{r}
+condition <- factor(c(0, 0, 1, 0, 1, 1))
+mycols <- brewer.pal(8, "Dark2")[1:length(unique(condition))]
+
+# Sample distance heatmap
+sampleDists <- as.matrix(dist(t(assay(rld))))
+heatmap.2(as.matrix(sampleDists), key=F, trace="none",
+          col=colorpanel(100, "black", "white"),
+          ColSideColors=mycols[condition], RowSideColors=mycols[condition],
+          margin=c(10, 10), main="Sample Distance Matrix")
+```
+PCA plot:
+```{r}
+plotPCA(rld, intgroup=c("Affected"))
+```
+
+
+## Write results to file
+
+order by adjusted pvalue
+```{r}
+resOrdered <- res[order(res$padj),]
+results <- as.data.frame(resOrdered)
+results <- results %>% rownames_to_column("ensgene") %>% filter(padj < 0.05)
+
+ensembl = useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl")
+hgnc_genes <- getBM(attributes=c('ensembl_gene_id','gene_biotype','hgnc_symbol','chromosome_name','description'), filters = 'ensembl_gene_id', values = results$ensgene, mart = ensembl)
+
+hgnc_genes
+```
+```{r}
+#ensembl genes that are not present in mart for some reason (probably because of the old ensembl annotation file, which I used)
+results %>% filter(!ensgene %in% hgnc_genes$ensembl_gene_id)
+```
+```{r}
+write.csv(as.data.frame(results), file="~/RNA-seq_Cynthia/pipeline_1.csv")
+
+results_present <- results %>% filter(ensgene %in% hgnc_genes$ensembl_gene_id)
+
+colnames(hgnc_genes)[1] <- "ensgene"
+x <- hgnc_genes %>% dplyr::select(ensgene, hgnc_symbol)
+results_joined <- left_join(results_present, x)
+
+write.csv(as.data.frame(results_joined), file="~/RNA-seq_Cynthia/pipeline_1_hgnc.csv")
+```
+
+
