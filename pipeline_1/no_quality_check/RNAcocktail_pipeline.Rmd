@@ -29,9 +29,24 @@ suppressMessages(suppressWarnings(library(tximportData)))
 suppressMessages(suppressWarnings(library(GenomicFeatures)))
 suppressMessages(suppressWarnings(library(biomaRt)))
 suppressMessages(suppressWarnings(library(gplots)))
+suppressMessages(suppressWarnings(library(geneplotter)))
+suppressMessages(suppressWarnings(library(fdrtool)))
 ```
 
 ## Running RNAcocktail with SALMON-SMEM
+
+Donwloading human transcriptome and gtf reference file (genome version 19):
+```{bash}
+##downloading a transcriptome
+#curl ftp://ftp.ensembl.org/pub/release-67/fasta/homo_sapiens/cdna/Homo_sapiens.GRCh37.67.cdna.all.fa.gz -o #human_transcriptome_19.fa.gz
+
+##downloading gtf file 
+#curl ftp://ftp.ensembl.org/pub/release-67/gtf/homo_sapiens/Homo_sapiens.GRCh37.67.gtf.gz -o genes_19.gtf.gz
+
+##indexing a transcriptome
+#salmon index -t human_transcriptome_19.fa -i human_transcriptome_19_index --type fmd
+
+```
 
 For running delete all comment symbols (#) except the first line (I used version 67 from ensembl website; new version 92 is available). 
 
@@ -91,7 +106,7 @@ files
 Using tximport package to load Salmon data:
 ```{r}
 names(files) <- metadata$Samples
-TxDb <- makeTxDbFromGFF(file = "genes_19.gtf")
+TxDb <- makeTxDbFromGFF(file = "genes_19.gtf.gz")
 k <- keys(TxDb, keytype = "TXNAME")
 tx2gene <- select(TxDb, k, "GENEID", "TXNAME")
 head(tx2gene)
@@ -140,6 +155,13 @@ ddsTxi <- DESeq(ddsTxi)
 res <- results(ddsTxi, name="Affected_1_vs_0")
 res
 ```
+Let's plot the densities of counts for the different samples. 
+```{r}
+multidensity( counts(ddsTxi, normalized = T),
+              xlab="mean counts", xlim=c(0, 1000))
+```
+
+
 ```{r}
 #adjusted p-value threshold
 res05 <- results(ddsTxi, alpha=0.05)
@@ -152,11 +174,62 @@ Only 59 genes are up-regulated, while 43 are down-regulated.
 sum(res05$padj < 0.05, na.rm=TRUE)
 ```
 
+p–value histogram of “correctly” computed p–values will have a rectangular shape with a peak at 0.
+
 Examine plot of p-values:
 ```{r}
 hist(res$pvalue, breaks=50, col="grey")
 ```
+We can see that this is clearly not the case for the p–values returned by DESeq2 in this case.
 
+Very often, if the assumed variance of the null distribution is too high, we see hill–shaped p–value histogram. If the variance is too low, we get a U–shaped histogram, with peaks at both ends. 
+
+Here we have a hill–shape, indicating an overestimation of the variance in the null distribution. Thus, the N(0,1) null distribution of the Wald test (which was used by DESeq function) is not appropriate here.
+
+Fortunately, there is software available to estimate the variance of the null–model from the test statistics. This is commonly referred to as “empirical null modelling”.
+
+Here we use the fdrtool for this using the Wald statistic as input. This packages returns the estimated null variance, as well as estimates of various other FDR–related quantities and the p–values computed using the estimated null model parameters.
+
+We first remove genes filtered out by independent filtering and the dispersion outliers, they have NA adj. pvals and NA p–values respectively.
+
+```{r}
+res <- res[ !is.na(res$padj), ]
+
+res <- res[ !is.na(res$pvalue), ]
+```
+
+We now remove the original adjusted p–values, since we will add the corrected ones later on.
+```{r}
+res <- res[, -which(names(res) == "padj")]
+```
+
+We can now use z–scores returned by DESeq2as input to fdrtool to re–estimate the p–values.
+```{r}
+FDR.res <- fdrtool(res$stat, statistic= "normal", plot = T)
+```
+```{r}
+FDR.res$param[1, "sd"]
+```
+Interestingly the estimated null model variance is 0.6727424, which is lower than 1, the theoretical one.
+
+We now add the new BH–adjusted p–values values to the results data frame.
+```{r}
+res[,"padj"]  <- p.adjust(FDR.res$pval, method = "BH")
+```
+
+We can now plot the histogram of the “correct” p–values.
+```{r}
+hist(FDR.res$pval, col = "royalblue4", 
+     main = "Correct null model", xlab = "CORRECTED p-values")
+```
+
+Now everything is great. We have correct form of p-value distribution. 
+
+Let's check the number of DE genes now:
+```{r}
+sum(res$padj < 0.05, na.rm=TRUE)
+```
+We have 406 DE genes at fdr level 0.05.
 
 ## Log fold change shrinkage for visualization and ranking
 
@@ -198,13 +271,20 @@ Count plot of one gene with the lowest adjusted (multiple test correction) pvalu
 ```{r}
 plotCounts(ddsTxi, gene=which.min(res$padj), intgroup="Affected")
 ```
-ENSG00000233841 is a HLA-C gene. (set returnData=TRUE for custom plots)
+(set returnData=TRUE for custom plots)
 
 ## Some pictures
 
+Let's visualize dispersion estimates (for each gene) of DESeq function:
 ```{r}
 plotDispEsts(ddsTxi, main="Dispersion plot")
 ```
+The black points are the dispersion estimates for each gene as obtained by considering the information from each gene separately. We have strong fluctuation of values around their true values, because we don't have enough samples here.
+
+Therefore, the red trend line is fitted, which shows the dispersions’ dependence on the mean, and then shrink each gene’s estimate towards the red line to obtain the final estimates (blue points) that are then used in the hypothesis test.
+
+The blue circles above the main “cloud” of points are genes which have high gene–wise dispersion estimates which are labelled as dispersion outliers. These estimates are therefore not shrunk toward the fitted trend line.
+
 ```{r}
 #Regularized log transformation for clustering/heatmaps, etc
 #produces transformed data on the log2 scale which has been normalized with 
@@ -225,12 +305,12 @@ heatmap.2(as.matrix(sampleDists), key=F, trace="none",
           col=colorpanel(100, "black", "white"),
           ColSideColors=mycols[condition], RowSideColors=mycols[condition],
           margin=c(10, 10), main="Sample Distance Matrix")
+legend(0.9,0.9, legend = unique(condition), col = c("#1B9E77", "#D95F02"), pch = 19)
 ```
 PCA plot:
 ```{r}
 plotPCA(rld, intgroup=c("Affected"))
 ```
-
 
 ## Write results to file
 
@@ -243,7 +323,7 @@ results <- results %>% rownames_to_column("ensgene") %>% filter(padj < 0.05)
 ensembl = useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl")
 hgnc_genes <- getBM(attributes=c('ensembl_gene_id','gene_biotype','hgnc_symbol','chromosome_name','description'), filters = 'ensembl_gene_id', values = results$ensgene, mart = ensembl)
 
-hgnc_genes
+head(hgnc_genes)
 ```
 ```{r}
 #ensembl genes that are not present in mart for some reason (probably because of the old ensembl annotation file, which I used)
@@ -261,4 +341,4 @@ results_joined <- left_join(results_present, x)
 write.csv(as.data.frame(results_joined), file="~/RNA-seq_Cynthia/pipeline_1_hgnc.csv")
 ```
 
-
+In limma we found only 21 DE genes. Among them 17 are present here: OASL, LRRC32, MEGF9, GSTM1, CYP4F29P, CPNE1, APOBEC3B, CD151, ZNF232, CXCR4, CHI3L2, DGKQ, ZNF215, PRKACB, CNTNAP1, SPARC, TRIT1.

@@ -24,10 +24,25 @@ suppressMessages(suppressWarnings(library(tximportData)))
 suppressMessages(suppressWarnings(library(GenomicFeatures)))
 suppressMessages(suppressWarnings(library(biomaRt)))
 suppressMessages(suppressWarnings(library(gplots)))
+suppressMessages(suppressWarnings(library(geneplotter)))
+suppressMessages(suppressWarnings(library(fdrtool)))
 ```
 
 Running RNAcocktail with SALMON-SMEM
 ------------------------------------
+
+Donwloading human transcriptome and gtf reference file (genome version 19):
+
+``` bash
+##downloading a transcriptome
+#curl ftp://ftp.ensembl.org/pub/release-67/fasta/homo_sapiens/cdna/Homo_sapiens.GRCh37.67.cdna.all.fa.gz -o #human_transcriptome_19.fa.gz
+
+##downloading gtf file 
+#curl ftp://ftp.ensembl.org/pub/release-67/gtf/homo_sapiens/Homo_sapiens.GRCh37.67.gtf.gz -o genes_19.gtf.gz
+
+##indexing a transcriptome
+#salmon index -t human_transcriptome_19.fa -i human_transcriptome_19_index --type fmd
+```
 
 For running delete all comment symbols (\#) except the first line (I used version 67 from ensembl website; new version 92 is available).
 
@@ -117,7 +132,7 @@ Using tximport package to load Salmon data:
 
 ``` r
 names(files) <- metadata$Samples
-TxDb <- makeTxDbFromGFF(file = "genes_19.gtf")
+TxDb <- makeTxDbFromGFF(file = "genes_19.gtf.gz")
 ```
 
     ## Import genomic features from the file as a GRanges object ... OK
@@ -289,6 +304,15 @@ res
     ## ENSG00000263344 0.9999121
     ## ENSG00000263345 0.9999121
 
+Let's plot the densities of counts for the different samples.
+
+``` r
+multidensity( counts(ddsTxi, normalized = T),
+              xlab="mean counts", xlim=c(0, 1000))
+```
+
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-13-1.png)
+
 ``` r
 #adjusted p-value threshold
 res05 <- results(ddsTxi, alpha=0.05)
@@ -314,13 +338,87 @@ sum(res05$padj < 0.05, na.rm=TRUE)
 
     ## [1] 102
 
+p–value histogram of “correctly” computed p–values will have a rectangular shape with a peak at 0.
+
 Examine plot of p-values:
 
 ``` r
 hist(res$pvalue, breaks=50, col="grey")
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-14-1.png)
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-16-1.png) We can see that this is clearly not the case for the p–values returned by DESeq2 in this case.
+
+Very often, if the assumed variance of the null distribution is too high, we see hill–shaped p–value histogram. If the variance is too low, we get a U–shaped histogram, with peaks at both ends.
+
+Here we have a hill–shape, indicating an overestimation of the variance in the null distribution. Thus, the N(0,1) null distribution of the Wald test (which was used by DESeq function) is not appropriate here.
+
+Fortunately, there is software available to estimate the variance of the null–model from the test statistics. This is commonly referred to as “empirical null modelling”.
+
+Here we use the fdrtool for this using the Wald statistic as input. This packages returns the estimated null variance, as well as estimates of various other FDR–related quantities and the p–values computed using the estimated null model parameters.
+
+We first remove genes filtered out by independent filtering and the dispersion outliers, they have NA adj. pvals and NA p–values respectively.
+
+``` r
+res <- res[ !is.na(res$padj), ]
+
+res <- res[ !is.na(res$pvalue), ]
+```
+
+We now remove the original adjusted p–values, since we will add the corrected ones later on.
+
+``` r
+res <- res[, -which(names(res) == "padj")]
+```
+
+We can now use z–scores returned by DESeq2as input to fdrtool to re–estimate the p–values.
+
+``` r
+FDR.res <- fdrtool(res$stat, statistic= "normal", plot = T)
+```
+
+    ## Step 1... determine cutoff point
+    ## Step 2... estimate parameters of null distribution and eta0
+    ## Step 3... compute p-values and estimate empirical PDF/CDF
+    ## Step 4... compute q-values and local fdr
+    ## Step 5... prepare for plotting
+
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-19-1.png)
+
+``` r
+FDR.res$param[1, "sd"]
+```
+
+    ##        sd 
+    ## 0.6727424
+
+Interestingly the estimated null model variance is 0.6727424, which is lower than 1, the theoretical one.
+
+We now add the new BH–adjusted p–values values to the results data frame.
+
+``` r
+res[,"padj"]  <- p.adjust(FDR.res$pval, method = "BH")
+```
+
+We can now plot the histogram of the “correct” p–values.
+
+``` r
+hist(FDR.res$pval, col = "royalblue4", 
+     main = "Correct null model", xlab = "CORRECTED p-values")
+```
+
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-22-1.png)
+
+Now everything is great. We have correct form of p-value distribution.
+
+Let's check the number of DE genes now:
+
+``` r
+sum(res$padj < 0.05, na.rm=TRUE)
+```
+
+    ## [1] 406
+
+We have 406 DE genes at fdr level 0.05.
 
 Log fold change shrinkage for visualization and ranking
 -------------------------------------------------------
@@ -369,21 +467,7 @@ The function plotMA shows the log2 fold changes attributable to a given variable
 plotMA(res, alpha = 0.05, ylim=c(-12,12))
 ```
 
-    ## Warning in plot.window(...): "alpha" is not a graphical parameter
-
-    ## Warning in plot.xy(xy, type, ...): "alpha" is not a graphical parameter
-
-    ## Warning in axis(side = side, at = at, labels = labels, ...): "alpha" is not
-    ## a graphical parameter
-
-    ## Warning in axis(side = side, at = at, labels = labels, ...): "alpha" is not
-    ## a graphical parameter
-
-    ## Warning in box(...): "alpha" is not a graphical parameter
-
-    ## Warning in title(...): "alpha" is not a graphical parameter
-
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-17-1.png)
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-26-1.png)
 
 It is more useful visualize the MA-plot for the shrunken log2 fold changes, which remove the noise associated with log2 fold changes from low count genes without requiring arbitrary filtering thresholds. (The large fold changes from genes with lots of statistical information are not shrunk, while the imprecise fold changes are shrunk).
 
@@ -391,7 +475,7 @@ It is more useful visualize the MA-plot for the shrunken log2 fold changes, whic
 plotMA(resLFC, ylim=c(-4,4), main = "apeglm")
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-18-1.png) We probably see the plot like this, because nearly all genes have no change of expression and there is little to no variation across replicates (so near technical replication); the same pattern was found by limma. And we have small number of genes with very large fold changes (see the above plot).
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-27-1.png) We probably see the plot like this, because nearly all genes have no change of expression and there is little to no variation across replicates (so near technical replication); the same pattern was found by limma. And we have small number of genes with very large fold changes (see the above plot).
 
 We can do LFC shrinkage with different methods, but apeglm is considered to be better (I didn't go deep into this). For comparison shrinkage with other methods:
 
@@ -400,7 +484,7 @@ resLFCnormal <- lfcShrink(ddsTxi, coef="Affected_1_vs_0", type="normal")
 plotMA(resLFCnormal, ylim=c(-4,4), main = "normal")
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-19-1.png)
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-28-1.png)
 
 ``` r
 resLFCashr <- lfcShrink(ddsTxi, coef="Affected_1_vs_0", type="ashr")
@@ -416,7 +500,7 @@ resLFCashr <- lfcShrink(ddsTxi, coef="Affected_1_vs_0", type="ashr")
 plotMA(resLFCashr, ylim=c(-4,4), main = "ashr")
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-20-1.png)
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-29-1.png)
 
 Count plot of one gene with the lowest adjusted (multiple test correction) pvalue (remember, 0 is unaffected, 1 is affected):
 
@@ -424,16 +508,22 @@ Count plot of one gene with the lowest adjusted (multiple test correction) pvalu
 plotCounts(ddsTxi, gene=which.min(res$padj), intgroup="Affected")
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-21-1.png) ENSG00000233841 is a HLA-C gene. (set returnData=TRUE for custom plots)
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-30-1.png) (set returnData=TRUE for custom plots)
 
 Some pictures
 -------------
+
+Let's visualize dispersion estimates (for each gene) of DESeq function:
 
 ``` r
 plotDispEsts(ddsTxi, main="Dispersion plot")
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-22-1.png)
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-31-1.png) The black points are the dispersion estimates for each gene as obtained by considering the information from each gene separately. We have strong fluctuation of values around their true values, because we don't have enough samples here.
+
+Therefore, the red trend line is fitted, which shows the dispersions’ dependence on the mean, and then shrink each gene’s estimate towards the red line to obtain the final estimates (blue points) that are then used in the hypothesis test.
+
+The blue circles above the main “cloud” of points are genes which have high gene–wise dispersion estimates which are labelled as dispersion outliers. These estimates are therefore not shrunk toward the fitted trend line.
 
 ``` r
 #Regularized log transformation for clustering/heatmaps, etc
@@ -462,7 +552,7 @@ head(assay(rld))
 hist(assay(rld))
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-24-1.png)
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-33-1.png)
 
 ``` r
 condition <- factor(c(0, 0, 1, 0, 1, 1))
@@ -474,15 +564,16 @@ heatmap.2(as.matrix(sampleDists), key=F, trace="none",
           col=colorpanel(100, "black", "white"),
           ColSideColors=mycols[condition], RowSideColors=mycols[condition],
           margin=c(10, 10), main="Sample Distance Matrix")
+legend(0.9,0.9, legend = unique(condition), col = c("#1B9E77", "#D95F02"), pch = 19)
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-25-1.png) PCA plot:
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-34-1.png) PCA plot:
 
 ``` r
 plotPCA(rld, intgroup=c("Affected"))
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-26-1.png)
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-35-1.png)
 
 Write results to file
 ---------------------
@@ -497,316 +588,115 @@ results <- results %>% rownames_to_column("ensgene") %>% filter(padj < 0.05)
 ensembl = useEnsembl(biomart="ensembl", dataset="hsapiens_gene_ensembl")
 hgnc_genes <- getBM(attributes=c('ensembl_gene_id','gene_biotype','hgnc_symbol','chromosome_name','description'), filters = 'ensembl_gene_id', values = results$ensgene, mart = ensembl)
 
-hgnc_genes
+head(hgnc_genes)
 ```
 
-    ##    ensembl_gene_id                       gene_biotype  hgnc_symbol
-    ## 1  ENSG00000064886                     protein_coding       CHI3L2
-    ## 2  ENSG00000082805                     protein_coding         ERC1
-    ## 3  ENSG00000096155                     protein_coding         BAG6
-    ## 4  ENSG00000100376                     protein_coding      FAM118A
-    ## 5  ENSG00000105971                     protein_coding         CAV2
-    ## 6  ENSG00000106780                     protein_coding        MEGF9
-    ## 7  ENSG00000129204                     protein_coding         USP6
-    ## 8  ENSG00000134184                     protein_coding        GSTM1
-    ## 9  ENSG00000135114                     protein_coding         OASL
-    ## 10 ENSG00000137331                     protein_coding         IER3
-    ## 11 ENSG00000137507                     protein_coding       LRRC32
-    ## 12 ENSG00000146112                     protein_coding      PPP1R18
-    ## 13 ENSG00000148291                     protein_coding        SURF2
-    ## 14 ENSG00000148300                     protein_coding        REXO4
-    ## 15 ENSG00000149054                     protein_coding       ZNF215
-    ## 16 ENSG00000151303               processed_transcript             
-    ## 17 ENSG00000164692                     protein_coding       COL1A2
-    ## 18 ENSG00000173809                     protein_coding       TDRD12
-    ## 19 ENSG00000177697                     protein_coding        CD151
-    ## 20 ENSG00000179750                     protein_coding     APOBEC3B
-    ## 21 ENSG00000204252                     protein_coding      HLA-DOA
-    ## 22 ENSG00000204256                     protein_coding         BRD2
-    ## 23 ENSG00000204351                     protein_coding       SKIV2L
-    ## 24 ENSG00000204619                     protein_coding      PPP1R11
-    ## 25 ENSG00000205464                     protein_coding     ATP6AP1L
-    ## 26 ENSG00000206281                     protein_coding        TAPBP
-    ## 27 ENSG00000206285                     protein_coding      B3GALT4
-    ## 28 ENSG00000206305                     protein_coding     HLA-DQA1
-    ## 29 ENSG00000206315                     protein_coding         PBX2
-    ## 30 ENSG00000206427                     protein_coding       PRRC2A
-    ## 31 ENSG00000206446               processed_transcript    HLA-F-AS1
-    ## 32 ENSG00000212866                     protein_coding       HSPA1B
-    ## 33 ENSG00000215559 transcribed_unprocessed_pseudogene  ANKRD20A11P
-    ## 34 ENSG00000223481                     protein_coding         TAP2
-    ## 35 ENSG00000224320                     protein_coding        HLA-A
-    ## 36 ENSG00000224379                     protein_coding        TCF19
-    ## 37 ENSG00000224501                     protein_coding       HSPA1B
-    ## 38 ENSG00000224859                     protein_coding        ZNRD1
-    ## 39 ENSG00000225060                     protein_coding      PPP1R18
-    ## 40 ENSG00000225164                     protein_coding       PRRC2A
-    ## 41 ENSG00000225824                     protein_coding     HLA-DQB1
-    ## 42 ENSG00000225890                     protein_coding     HLA-DQA1
-    ## 43 ENSG00000225967                     protein_coding         TAP2
-    ## 44 ENSG00000226152             unprocessed_pseudogene       HCG4P7
-    ## 45 ENSG00000227315                     protein_coding         NEU1
-    ## 46 ENSG00000227739                     protein_coding         TUBB
-    ## 47 ENSG00000227761                     protein_coding         BAG6
-    ## 48 ENSG00000227827             unprocessed_pseudogene             
-    ## 49 ENSG00000228314 transcribed_unprocessed_pseudogene     CYP4F29P
-    ## 50 ENSG00000228405                     protein_coding         RNF5
-    ## 51 ENSG00000228435                     protein_coding      C6orf47
-    ## 52 ENSG00000228490             unprocessed_pseudogene       HCG4P7
-    ## 53 ENSG00000228570                     protein_coding       NUTM2E
-    ## 54 ENSG00000228760                     protein_coding         BAG6
-    ## 55 ENSG00000229215                     protein_coding        HLA-A
-    ## 56 ENSG00000229998                     protein_coding      PPP1R18
-    ## 57 ENSG00000230141                     protein_coding      HLA-DOA
-    ## 58 ENSG00000230230                     protein_coding       TRIM26
-    ## 59 ENSG00000230389               processed_transcript         HCP5
-    ## 60 ENSG00000230685                     protein_coding        CLIC1
-    ## 61 ENSG00000231247                     protein_coding      PPP1R18
-    ## 62 ENSG00000231825                     protein_coding       PRRC2A
-    ## 63 ENSG00000232005                     protein_coding         PBX2
-    ## 64 ENSG00000232280                     protein_coding        FLOT1
-    ## 65 ENSG00000232326                     protein_coding         TAP2
-    ## 66 ENSG00000232962                     protein_coding      HLA-DOA
-    ## 67 ENSG00000233381               processed_pseudogene        AK4P3
-    ## 68 ENSG00000233841                     protein_coding        HLA-C
-    ## 69 ENSG00000234218                     protein_coding         MICB
-    ## 70 ENSG00000234539                     protein_coding        ATF6B
-    ## 71 ENSG00000234651                     protein_coding         BAG6
-    ## 72 ENSG00000234704                     protein_coding         BRD2
-    ## 73 ENSG00000235222                     protein_coding         MSH5
-    ## 74 ENSG00000235657                     protein_coding        HLA-A
-    ## 75 ENSG00000235986                     protein_coding         GNL1
-    ## 76 ENSG00000236011                     protein_coding       GPANK1
-    ## 77 ENSG00000236090               processed_pseudogene       LDHAP3
-    ## 78 ENSG00000236418                     protein_coding     HLA-DQA1
-    ## 79 ENSG00000236552               processed_pseudogene     RPL13AP5
-    ## 80 ENSG00000236884                     protein_coding     HLA-DRB1
-    ## 81 ENSG00000237105               processed_transcript         HCP5
-    ## 82 ENSG00000237344                     protein_coding         PBX2
-    ## 83 ENSG00000237724                     protein_coding       HSPA1A
-    ## 84 ENSG00000241386                     protein_coding      HLA-DOB
-    ## 85 ENSG00000241713                     protein_coding       LY6G5B
-    ## 86 ENSG00000243492 transcribed_unprocessed_pseudogene        HLA-L
-    ## 87 ENSG00000243496                     protein_coding      HLA-DOB
-    ## 88 ENSG00000248769             unprocessed_pseudogene             
-    ## 89 ENSG00000251624             unprocessed_pseudogene      UNC93B7
-    ## 90 ENSG00000254405                     protein_coding  MSH5-SAPCD1
-    ## 91 ENSG00000257473                     protein_coding     HLA-DQA2
-    ## 92 ENSG00000258588                     protein_coding TRIM6-TRIM34
-    ##             chromosome_name
-    ## 1                         1
-    ## 2                        12
-    ## 3   CHR_HSCHR6_MHC_QBL_CTG1
-    ## 4                        22
-    ## 5                         7
-    ## 6                         9
-    ## 7                        17
-    ## 8                         1
-    ## 9                        12
-    ## 10                        6
-    ## 11                       11
-    ## 12                        6
-    ## 13                        9
-    ## 14                        9
-    ## 15                       11
-    ## 16                       10
-    ## 17                        7
-    ## 18                       19
-    ## 19                       11
-    ## 20                       22
-    ## 21                        6
-    ## 22                        6
-    ## 23                        6
-    ## 24                        6
-    ## 25                        5
-    ## 26  CHR_HSCHR6_MHC_QBL_CTG1
-    ## 27  CHR_HSCHR6_MHC_QBL_CTG1
-    ## 28  CHR_HSCHR6_MHC_QBL_CTG1
-    ## 29  CHR_HSCHR6_MHC_QBL_CTG1
-    ## 30  CHR_HSCHR6_MHC_QBL_CTG1
-    ## 31  CHR_HSCHR6_MHC_COX_CTG1
-    ## 32  CHR_HSCHR6_MHC_QBL_CTG1
-    ## 33                       21
-    ## 34  CHR_HSCHR6_MHC_DBB_CTG1
-    ## 35  CHR_HSCHR6_MHC_COX_CTG1
-    ## 36  CHR_HSCHR6_MHC_COX_CTG1
-    ## 37  CHR_HSCHR6_MHC_COX_CTG1
-    ## 38  CHR_HSCHR6_MHC_COX_CTG1
-    ## 39  CHR_HSCHR6_MHC_MCF_CTG1
-    ## 40  CHR_HSCHR6_MHC_COX_CTG1
-    ## 41 CHR_HSCHR6_MHC_MANN_CTG1
-    ## 42 CHR_HSCHR6_MHC_MANN_CTG1
-    ## 43  CHR_HSCHR6_MHC_APD_CTG1
-    ## 44  CHR_HSCHR6_MHC_COX_CTG1
-    ## 45  CHR_HSCHR6_MHC_COX_CTG1
-    ## 46  CHR_HSCHR6_MHC_COX_CTG1
-    ## 47  CHR_HSCHR6_MHC_DBB_CTG1
-    ## 48                       16
-    ## 49                       21
-    ## 50  CHR_HSCHR6_MHC_COX_CTG1
-    ## 51  CHR_HSCHR6_MHC_DBB_CTG1
-    ## 52  CHR_HSCHR6_MHC_APD_CTG1
-    ## 53                       10
-    ## 54 CHR_HSCHR6_MHC_MANN_CTG1
-    ## 55  CHR_HSCHR6_MHC_APD_CTG1
-    ## 56 CHR_HSCHR6_MHC_MANN_CTG1
-    ## 57  CHR_HSCHR6_MHC_MCF_CTG1
-    ## 58  CHR_HSCHR6_MHC_COX_CTG1
-    ## 59 CHR_HSCHR6_MHC_SSTO_CTG1
-    ## 60  CHR_HSCHR6_MHC_COX_CTG1
-    ## 61  CHR_HSCHR6_MHC_COX_CTG1
-    ## 62 CHR_HSCHR6_MHC_SSTO_CTG1
-    ## 63 CHR_HSCHR6_MHC_MANN_CTG1
-    ## 64  CHR_HSCHR6_MHC_COX_CTG1
-    ## 65 CHR_HSCHR6_MHC_SSTO_CTG1
-    ## 66  CHR_HSCHR6_MHC_COX_CTG1
-    ## 67                       12
-    ## 68  CHR_HSCHR6_MHC_COX_CTG1
-    ## 69  CHR_HSCHR6_MHC_COX_CTG1
-    ## 70  CHR_HSCHR6_MHC_COX_CTG1
-    ## 71  CHR_HSCHR6_MHC_MCF_CTG1
-    ## 72 CHR_HSCHR6_MHC_MANN_CTG1
-    ## 73  CHR_HSCHR6_MHC_COX_CTG1
-    ## 74  CHR_HSCHR6_MHC_DBB_CTG1
-    ## 75  CHR_HSCHR6_MHC_COX_CTG1
-    ## 76  CHR_HSCHR6_MHC_COX_CTG1
-    ## 77                        2
-    ## 78  CHR_HSCHR6_MHC_DBB_CTG1
-    ## 79                       10
-    ## 80  CHR_HSCHR6_MHC_DBB_CTG1
-    ## 81  CHR_HSCHR6_MHC_COX_CTG1
-    ## 82  CHR_HSCHR6_MHC_COX_CTG1
-    ## 83  CHR_HSCHR6_MHC_COX_CTG1
-    ## 84  CHR_HSCHR6_MHC_COX_CTG1
-    ## 85  CHR_HSCHR6_MHC_COX_CTG1
-    ## 86  CHR_HSCHR6_MHC_COX_CTG1
-    ## 87  CHR_HSCHR6_MHC_DBB_CTG1
-    ## 88                        5
-    ## 89                        4
-    ## 90  CHR_HSCHR6_MHC_COX_CTG1
-    ## 91  CHR_HSCHR6_MHC_COX_CTG1
-    ## 92                       11
-    ##                                                                                      description
-    ## 1                                          chitinase 3 like 2 [Source:HGNC Symbol;Acc:HGNC:1933]
-    ## 2                 ELKS/RAB6-interacting/CAST family member 1 [Source:HGNC Symbol;Acc:HGNC:17072]
-    ## 3                               BCL2 associated athanogene 6 [Source:HGNC Symbol;Acc:HGNC:13919]
-    ## 4                family with sequence similarity 118 member A [Source:HGNC Symbol;Acc:HGNC:1313]
-    ## 5                                                  caveolin 2 [Source:HGNC Symbol;Acc:HGNC:1528]
-    ## 6                                 multiple EGF like domains 9 [Source:HGNC Symbol;Acc:HGNC:3234]
-    ## 7                             ubiquitin specific peptidase 6 [Source:HGNC Symbol;Acc:HGNC:12629]
-    ## 8                              glutathione S-transferase mu 1 [Source:HGNC Symbol;Acc:HGNC:4632]
-    ## 9                        2'-5'-oligoadenylate synthetase like [Source:HGNC Symbol;Acc:HGNC:8090]
-    ## 10                                 immediate early response 3 [Source:HGNC Symbol;Acc:HGNC:5392]
-    ## 11                          leucine rich repeat containing 32 [Source:HGNC Symbol;Acc:HGNC:4161]
-    ## 12               protein phosphatase 1 regulatory subunit 18 [Source:HGNC Symbol;Acc:HGNC:29413]
-    ## 13                                                 surfeit 2 [Source:HGNC Symbol;Acc:HGNC:11475]
-    ## 14                           REX4 homolog, 3'-5' exonuclease [Source:HGNC Symbol;Acc:HGNC:12820]
-    ## 15                                   zinc finger protein 215 [Source:HGNC Symbol;Acc:HGNC:13007]
-    ## 16                                                                                              
-    ## 17                              collagen type I alpha 2 chain [Source:HGNC Symbol;Acc:HGNC:2198]
-    ## 18                                tudor domain containing 12 [Source:HGNC Symbol;Acc:HGNC:25044]
-    ## 19                          CD151 molecule (Raph blood group) [Source:HGNC Symbol;Acc:HGNC:1630]
-    ## 20 apolipoprotein B mRNA editing enzyme catalytic subunit 3B [Source:HGNC Symbol;Acc:HGNC:17352]
-    ## 21       major histocompatibility complex, class II, DO alpha [Source:HGNC Symbol;Acc:HGNC:4936]
-    ## 22                                   bromodomain containing 2 [Source:HGNC Symbol;Acc:HGNC:1103]
-    ## 23                                    Ski2 like RNA helicase [Source:HGNC Symbol;Acc:HGNC:10898]
-    ## 24      protein phosphatase 1 regulatory inhibitor subunit 11 [Source:HGNC Symbol;Acc:HGNC:9285]
-    ## 25           ATPase H+ transporting accessory protein 1 like [Source:HGNC Symbol;Acc:HGNC:28091]
-    ## 26                                       TAP binding protein [Source:HGNC Symbol;Acc:HGNC:11566]
-    ## 27                            beta-1,3-galactosyltransferase 4 [Source:HGNC Symbol;Acc:HGNC:919]
-    ## 28     major histocompatibility complex, class II, DQ alpha 1 [Source:HGNC Symbol;Acc:HGNC:4942]
-    ## 29                                             PBX homeobox 2 [Source:HGNC Symbol;Acc:HGNC:8633]
-    ## 30                               proline rich coiled-coil 2A [Source:HGNC Symbol;Acc:HGNC:13918]
-    ## 31                                     HLA-F antisense RNA 1 [Source:HGNC Symbol;Acc:HGNC:26645]
-    ## 32              heat shock protein family A (Hsp70) member 1B [Source:HGNC Symbol;Acc:HGNC:5233]
-    ## 33    ankyrin repeat domain 20 family member A11, pseudogene [Source:HGNC Symbol;Acc:HGNC:42024]
-    ## 34       transporter 2, ATP binding cassette subfamily B member [Source:HGNC Symbol;Acc:HGNC:44]
-    ## 35               major histocompatibility complex, class I, A [Source:HGNC Symbol;Acc:HGNC:4931]
-    ## 36                                   transcription factor 19 [Source:HGNC Symbol;Acc:HGNC:11629]
-    ## 37              heat shock protein family A (Hsp70) member 1B [Source:HGNC Symbol;Acc:HGNC:5233]
-    ## 38                           zinc ribbon domain containing 1 [Source:HGNC Symbol;Acc:HGNC:13182]
-    ## 39               protein phosphatase 1 regulatory subunit 18 [Source:HGNC Symbol;Acc:HGNC:29413]
-    ## 40                               proline rich coiled-coil 2A [Source:HGNC Symbol;Acc:HGNC:13918]
-    ## 41      major histocompatibility complex, class II, DQ beta 1 [Source:HGNC Symbol;Acc:HGNC:4944]
-    ## 42     major histocompatibility complex, class II, DQ alpha 1 [Source:HGNC Symbol;Acc:HGNC:4942]
-    ## 43       transporter 2, ATP binding cassette subfamily B member [Source:HGNC Symbol;Acc:HGNC:44]
-    ## 44                          HLA complex group 4 pseudogene 7 [Source:HGNC Symbol;Acc:HGNC:22926]
-    ## 45                                            neuraminidase 1 [Source:HGNC Symbol;Acc:HGNC:7758]
-    ## 46                                      tubulin beta class I [Source:HGNC Symbol;Acc:HGNC:20778]
-    ## 47                              BCL2 associated athanogene 6 [Source:HGNC Symbol;Acc:HGNC:13919]
-    ## 48                                                                                              
-    ## 49 cytochrome P450 family 4 subfamily F member 29, pseudogene [Source:HGNC Symbol;Acc:HGNC:2647]
-    ## 50                                     ring finger protein 5 [Source:HGNC Symbol;Acc:HGNC:10068]
-    ## 51                        chromosome 6 open reading frame 47 [Source:HGNC Symbol;Acc:HGNC:19076]
-    ## 52                          HLA complex group 4 pseudogene 7 [Source:HGNC Symbol;Acc:HGNC:22926]
-    ## 53                                      NUT family member 2E [Source:HGNC Symbol;Acc:HGNC:23448]
-    ## 54                              BCL2 associated athanogene 6 [Source:HGNC Symbol;Acc:HGNC:13919]
-    ## 55               major histocompatibility complex, class I, A [Source:HGNC Symbol;Acc:HGNC:4931]
-    ## 56               protein phosphatase 1 regulatory subunit 18 [Source:HGNC Symbol;Acc:HGNC:29413]
-    ## 57       major histocompatibility complex, class II, DO alpha [Source:HGNC Symbol;Acc:HGNC:4936]
-    ## 58                            tripartite motif containing 26 [Source:HGNC Symbol;Acc:HGNC:12962]
-    ## 59                       HLA complex P5 (non-protein coding) [Source:HGNC Symbol;Acc:HGNC:21659]
-    ## 60                           chloride intracellular channel 1 [Source:HGNC Symbol;Acc:HGNC:2062]
-    ## 61               protein phosphatase 1 regulatory subunit 18 [Source:HGNC Symbol;Acc:HGNC:29413]
-    ## 62                               proline rich coiled-coil 2A [Source:HGNC Symbol;Acc:HGNC:13918]
-    ## 63                                             PBX homeobox 2 [Source:HGNC Symbol;Acc:HGNC:8633]
-    ## 64                                                flotillin 1 [Source:HGNC Symbol;Acc:HGNC:3757]
-    ## 65       transporter 2, ATP binding cassette subfamily B member [Source:HGNC Symbol;Acc:HGNC:44]
-    ## 66       major histocompatibility complex, class II, DO alpha [Source:HGNC Symbol;Acc:HGNC:4936]
-    ## 67                           adenylate kinase 4 pseudogene 3 [Source:HGNC Symbol;Acc:HGNC:21596]
-    ## 68               major histocompatibility complex, class I, C [Source:HGNC Symbol;Acc:HGNC:4933]
-    ## 69                 MHC class I polypeptide-related sequence B [Source:HGNC Symbol;Acc:HGNC:7091]
-    ## 70                     activating transcription factor 6 beta [Source:HGNC Symbol;Acc:HGNC:2349]
-    ## 71                              BCL2 associated athanogene 6 [Source:HGNC Symbol;Acc:HGNC:13919]
-    ## 72                                   bromodomain containing 2 [Source:HGNC Symbol;Acc:HGNC:1103]
-    ## 73                                             mutS homolog 5 [Source:HGNC Symbol;Acc:HGNC:7328]
-    ## 74               major histocompatibility complex, class I, A [Source:HGNC Symbol;Acc:HGNC:4931]
-    ## 75                           G protein nucleolar 1 (putative) [Source:HGNC Symbol;Acc:HGNC:4413]
-    ## 76                      G-patch domain and ankyrin repeats 1 [Source:HGNC Symbol;Acc:HGNC:13920]
-    ## 77                       lactate dehydrogenase A pseudogene 3 [Source:HGNC Symbol;Acc:HGNC:6538]
-    ## 78     major histocompatibility complex, class II, DQ alpha 1 [Source:HGNC Symbol;Acc:HGNC:4942]
-    ## 79                       ribosomal protein L13a pseudogene 5 [Source:HGNC Symbol;Acc:HGNC:23736]
-    ## 80      major histocompatibility complex, class II, DR beta 1 [Source:HGNC Symbol;Acc:HGNC:4948]
-    ## 81                       HLA complex P5 (non-protein coding) [Source:HGNC Symbol;Acc:HGNC:21659]
-    ## 82                                             PBX homeobox 2 [Source:HGNC Symbol;Acc:HGNC:8633]
-    ## 83              heat shock protein family A (Hsp70) member 1A [Source:HGNC Symbol;Acc:HGNC:5232]
-    ## 84        major histocompatibility complex, class II, DO beta [Source:HGNC Symbol;Acc:HGNC:4937]
-    ## 85                    lymphocyte antigen 6 family member G5B [Source:HGNC Symbol;Acc:HGNC:13931]
-    ## 86  major histocompatibility complex, class I, L (pseudogene) [Source:HGNC Symbol;Acc:HGNC:4970]
-    ## 87        major histocompatibility complex, class II, DO beta [Source:HGNC Symbol;Acc:HGNC:4937]
-    ## 88                                                                                              
-    ## 89                             unc-93 homolog B7, pseudogene [Source:HGNC Symbol;Acc:HGNC:44036]
-    ## 90                   MSH5-SAPCD1 readthrough (NMD candidate) [Source:HGNC Symbol;Acc:HGNC:41994]
-    ## 91     major histocompatibility complex, class II, DQ alpha 2 [Source:HGNC Symbol;Acc:HGNC:4943]
-    ## 92                                  TRIM6-TRIM34 readthrough [Source:HGNC Symbol;Acc:HGNC:33440]
+    ##   ensembl_gene_id   gene_biotype hgnc_symbol chromosome_name
+    ## 1 ENSG00000007038 protein_coding      PRSS21              16
+    ## 2 ENSG00000008517 protein_coding        IL32              16
+    ## 3 ENSG00000021300 protein_coding     PLEKHB1              11
+    ## 4 ENSG00000043514 protein_coding       TRIT1               1
+    ## 5 ENSG00000059804 protein_coding      SLC2A3              12
+    ## 6 ENSG00000060709 protein_coding      RIMBP2              12
+    ##                                                                    description
+    ## 1                        serine protease 21 [Source:HGNC Symbol;Acc:HGNC:9485]
+    ## 2                           interleukin 32 [Source:HGNC Symbol;Acc:HGNC:16830]
+    ## 3 pleckstrin homology domain containing B1 [Source:HGNC Symbol;Acc:HGNC:19079]
+    ## 4            tRNA isopentenyltransferase 1 [Source:HGNC Symbol;Acc:HGNC:20286]
+    ## 5         solute carrier family 2 member 3 [Source:HGNC Symbol;Acc:HGNC:11007]
+    ## 6                   RIMS binding protein 2 [Source:HGNC Symbol;Acc:HGNC:30339]
 
 ``` r
 #ensembl genes that are not present in mart for some reason (probably because of the old ensembl annotation file, which I used)
 results %>% filter(!ensgene %in% hgnc_genes$ensembl_gene_id)
 ```
 
-    ##            ensgene   baseMean log2FoldChange     lfcSE      stat
-    ## 1  ENSG00000262170 454.491363      -5.318557 0.5708573 -9.316789
-    ## 2  ENSG00000108278 166.267737      -8.698852 1.1242443 -7.737510
-    ## 3  ENSG00000182109 118.519417      -2.165737 0.3397979 -6.373603
-    ## 4  ENSG00000257073 104.268712       8.418218 1.3210579  6.372331
-    ## 5  ENSG00000188126 662.048752       3.036173 0.5002665  6.069112
-    ## 6  ENSG00000261493 985.729850       1.313938 0.2323920  5.653972
-    ## 7  ENSG00000230195   1.786816     -19.643822 4.2056741 -4.670790
-    ## 8  ENSG00000263230   4.264445      17.234953 4.2015298  4.102066
-    ## 9  ENSG00000262279   2.046934      16.734964 4.2045305  3.980222
-    ## 10 ENSG00000262023 301.899973       2.019451 0.5426790  3.721261
+    ##            ensgene    baseMean log2FoldChange     lfcSE      stat
+    ## 1  ENSG00000108278  166.267737     -8.6988517 1.1242443 -7.737510
+    ## 2  ENSG00000182109  118.519417     -2.1657372 0.3397979 -6.373603
+    ## 3  ENSG00000188126  662.048752      3.0361734 0.5002665  6.069112
+    ## 4  ENSG00000257073  104.268712      8.4182182 1.3210579  6.372331
+    ## 5  ENSG00000261493  985.729850      1.3139377 0.2323920  5.653972
+    ## 6  ENSG00000262170  454.491363     -5.3185571 0.5708573 -9.316789
+    ## 7  ENSG00000230195    1.786816    -19.6438225 4.2056741 -4.670790
+    ## 8  ENSG00000263230    4.264445     17.2349526 4.2015298  4.102066
+    ## 9  ENSG00000262279    2.046934     16.7349638 4.2045305  3.980222
+    ## 10 ENSG00000262023  301.899973      2.0194506 0.5426790  3.721261
+    ## 11 ENSG00000262197    9.671020     -5.9248167 1.6426938 -3.606769
+    ## 12 ENSG00000263062  250.243564     -1.4949885 0.4230029 -3.534228
+    ## 13 ENSG00000262397   70.170491      2.2346867 0.6340612  3.524402
+    ## 14 ENSG00000140181 2982.191432     -0.9500317 0.2746887 -3.458576
+    ## 15 ENSG00000203827  257.590478      1.1807384 0.3617654  3.263824
+    ## 16 ENSG00000206082  299.998124     -0.7255864 0.2326985 -3.118140
+    ## 17 ENSG00000179296  136.512736      2.1409299 0.6876629  3.113342
+    ## 18 ENSG00000262511  638.882093      0.9588027 0.3125650  3.067531
+    ## 19 ENSG00000205595    6.046182     -6.1449119 2.0236562 -3.036539
+    ## 20 ENSG00000262641   17.733641     -7.5052760 2.6843312 -2.795958
+    ## 21 ENSG00000185128  958.307795      2.1044884 0.7569883  2.780080
+    ## 22 ENSG00000184674  316.248567     -5.5040136 2.0205504 -2.724017
+    ## 23 ENSG00000261657  176.214142      0.7508367 0.2771524  2.709112
+    ## 24 ENSG00000232745   21.336090     -3.2504059 1.2024780 -2.703090
+    ## 25 ENSG00000262122  746.627110     -1.3517584 0.5023904 -2.690653
+    ## 26 ENSG00000261948  155.876450     -1.5882979 0.5911551 -2.686770
+    ## 27 ENSG00000234516   25.582783      3.4912836 1.3116507  2.661748
+    ## 28 ENSG00000235231   42.504792     -3.2393882 1.2251262 -2.644126
+    ## 29 ENSG00000261969   15.042716     -7.2608042 2.7528041 -2.637603
+    ## 30 ENSG00000262137   15.042716     -7.2608042 2.7528041 -2.637603
+    ## 31 ENSG00000262357   15.042716     -7.2608042 2.7528041 -2.637603
+    ## 32 ENSG00000262857   15.042716     -7.2608042 2.7528041 -2.637603
+    ## 33 ENSG00000262954   15.042716     -7.2608042 2.7528041 -2.637603
+    ## 34 ENSG00000263268   15.042716     -7.2608042 2.7528041 -2.637603
+    ## 35 ENSG00000072444   15.533054     -4.4031027 1.6812174 -2.618997
+    ## 36 ENSG00000263054 2309.073740      6.1169870 2.3561883  2.596137
+    ## 37 ENSG00000260952  867.781809      1.0179728 0.4125851  2.467304
+    ## 38 ENSG00000197704    4.294400     -5.5461409 2.2639376 -2.449776
+    ## 39 ENSG00000255436   76.639888      2.0958183 0.8773164  2.388897
+    ## 40 ENSG00000262741   79.394960      2.9980443 1.2971087  2.311329
+    ## 41 ENSG00000172070  437.402311     -0.6745783 0.3019365 -2.234172
+    ## 42 ENSG00000259938  283.900655     -1.3437647 0.6039285 -2.225039
     ##          pvalue         padj
-    ## 1  1.199149e-20 2.349895e-17
-    ## 2  1.013824e-14 1.150210e-11
-    ## 3  1.846381e-10 1.383871e-07
-    ## 4  1.861767e-10 1.383871e-07
-    ## 5  1.286193e-09 8.401570e-07
-    ## 6  1.567821e-08 8.046654e-06
-    ## 7  3.000428e-06 1.134688e-03
-    ## 8  4.094775e-05 1.131628e-02
-    ## 9  6.885101e-05 1.725759e-02
-    ## 10 1.982301e-04 4.230740e-02
+    ## 1  1.013824e-14 1.087817e-13
+    ## 2  1.846381e-10 1.087817e-13
+    ## 3  1.286193e-09 1.087817e-13
+    ## 4  1.861767e-10 1.087817e-13
+    ## 5  1.567821e-08 1.087817e-13
+    ## 6  1.199149e-20 1.087817e-13
+    ## 7  3.000428e-06 1.452544e-09
+    ## 8  4.094775e-05 2.976959e-07
+    ## 9  6.885101e-05 8.247382e-07
+    ## 10 1.982301e-04 6.777095e-06
+    ## 11 3.100337e-04 1.643050e-05
+    ## 12 4.089682e-04 2.822413e-05
+    ## 13 4.244395e-04 3.028576e-05
+    ## 14 5.430382e-04 4.868147e-05
+    ## 15 1.099196e-03 1.970900e-04
+    ## 16 1.819963e-03 5.029605e-04
+    ## 17 1.849814e-03 5.172101e-04
+    ## 18 2.158351e-03 6.773181e-04
+    ## 19 2.393108e-03 8.078970e-04
+    ## 20 5.174620e-03 3.323557e-03
+    ## 21 5.434543e-03 3.615186e-03
+    ## 22 6.449320e-03 4.903496e-03
+    ## 23 6.746365e-03 5.249711e-03
+    ## 24 6.869819e-03 5.383510e-03
+    ## 25 7.131223e-03 5.653403e-03
+    ## 26 7.214658e-03 5.721954e-03
+    ## 27 7.773608e-03 6.478361e-03
+    ## 28 8.190213e-03 7.004907e-03
+    ## 29 8.349428e-03 7.037506e-03
+    ## 30 8.349428e-03 7.037506e-03
+    ## 31 8.349428e-03 7.037506e-03
+    ## 32 8.349428e-03 7.037506e-03
+    ## 33 8.349428e-03 7.037506e-03
+    ## 34 8.349428e-03 7.037506e-03
+    ## 35 8.818880e-03 7.732488e-03
+    ## 36 9.427853e-03 8.701542e-03
+    ## 37 1.361347e-02 1.714003e-02
+    ## 38 1.429449e-02 1.843327e-02
+    ## 39 1.689905e-02 2.476971e-02
+    ## 40 2.081472e-02 3.387757e-02
+    ## 41 2.547173e-02 4.845936e-02
+    ## 42 2.607860e-02 4.999331e-02
 
 ``` r
 write.csv(as.data.frame(results), file="~/RNA-seq_Cynthia/pipeline_1.csv")
@@ -823,3 +713,5 @@ results_joined <- left_join(results_present, x)
 ``` r
 write.csv(as.data.frame(results_joined), file="~/RNA-seq_Cynthia/pipeline_1_hgnc.csv")
 ```
+
+In limma we found only 21 DE genes. Among them 17 are present here: OASL, LRRC32, MEGF9, GSTM1, CYP4F29P, CPNE1, APOBEC3B, CD151, ZNF232, CXCR4, CHI3L2, DGKQ, ZNF215, PRKACB, CNTNAP1, SPARC, TRIT1.
