@@ -1,7 +1,7 @@
 ---
-title: "RNAcocktail_analysis"
+title: "RNAcocktail_pipeline_quality"
 author: "German Novakovskiy"
-date: "June 9, 2018"
+date: "June 11, 2018"
 output: github_document
 ---
 
@@ -12,8 +12,6 @@ knitr::opts_chunk$set(echo = TRUE)
 # RNA-seq analysis with DESeq2
 
 ```{r}
-suppressMessages(suppressWarnings(library(AnnotationDbi)))
-suppressMessages(suppressWarnings(library(org.Hs.eg.db)))
 suppressMessages(suppressWarnings(library(dplyr)))
 suppressMessages(suppressWarnings(library(knitr)))
 suppressMessages(suppressWarnings(library(tximport)))
@@ -33,19 +31,18 @@ suppressMessages(suppressWarnings(library(biomaRt)))
 suppressMessages(suppressWarnings(library(gplots)))
 suppressMessages(suppressWarnings(library(geneplotter)))
 suppressMessages(suppressWarnings(library(fdrtool)))
-suppressMessages(suppressWarnings(library(genefilter)))
-suppressMessages(suppressWarnings(library(topGO)))
 ```
 
 ## Running RNAcocktail with SALMON-SMEM
 
 Donwloading human transcriptome and gtf reference file (genome version 19):
 ```{bash}
-##downloading a transcriptome
-#curl ftp://ftp.ensembl.org/pub/release-67/fasta/homo_sapiens/cdna/Homo_sapiens.GRCh37.67.cdna.all.fa.gz -o #human_transcriptome_19.fa.gz
+##downloading transcriptome
+#curl ftp://ftp.ensembl.org/pub/grch37/release-92/fasta/homo_sapiens/cdna/Homo_sapiens.GRCh37.cdna.all.fa.gz -o #human_92_transcriptome_19.fa.gz
 
-##downloading gtf file 
-#curl ftp://ftp.ensembl.org/pub/release-67/gtf/homo_sapiens/Homo_sapiens.GRCh37.67.gtf.gz -o genes_19.gtf.gz
+##downloading gtf annotation
+#curl ftp://ftp.ensembl.org/pub/grch37/release-92/gtf/homo_sapiens/Homo_sapiens.GRCh37.87.gtf.gz -o genes_92_19.gtf.gz
+
 
 ##indexing a transcriptome
 #salmon index -t human_transcriptome_19.fa -i human_transcriptome_19_index --type fmd
@@ -53,22 +50,21 @@ Donwloading human transcriptome and gtf reference file (genome version 19):
 ```
 
 For running delete all comment symbols (#) except the first line (I used version 67 from ensembl website; new version 92 is available). 
-
 ```{bash}
 #!/bin/bash
 
-#samples=($(ls raw_reads))
+#samples=($(ls good_reads))
 
 #for i in "${samples[@]}"
 #do
-        #TEST1=$(ls raw_reads/"$i"/*R1* | tr '\n' ' ' | \
+        #TEST1=$(ls good_reads/"$i"/*R1* | tr '\n' ' ' | \
         #awk '{for(i=1;i<=NF;i++){printf $i;if(i<NF)printf ","}}')
 
-        #TEST2=$(ls raw_reads/"$i"/*R2* | tr '\n' ' ' | \
+        #TEST2=$(ls good_reads/"$i"/*R2* | tr '\n' ' ' | \
         #awk '{for(i=1;i<=NF;i++){printf $i;if(i<NF)printf ","}}')
 
-        #run_rnacocktail.py quantify --quantifier_idx human_transcriptome_19_index/ --1 $TEST1 --2 $TEST2 \
-        #--libtype ISR --salmon_k 19 --outdir salmon_out --workdir salmon_work --sample $i --unzip
+        #run_rnacocktail.py quantify --quantifier_idx human_transcriptome_92_19_index/ --1 $TEST1 --2 $TEST2 \
+        #--libtype ISR --salmon_k 19 --outdir salmon_clean_out --workdir salmon_clean_work --sample $i --unzip
 
         #echo '\n'
         #echo '\n'
@@ -102,7 +98,7 @@ metadata
 ```
 ```{r}
 #files, output from Salmon-SMEM
-dir <- "~/RNA-seq_Cynthia/salmon_out"
+dir <- "~/RNA-seq_Cynthia/salmon_clean_out"
 files <- file.path(dir,"salmon_smem", metadata$Samples, "quant.sf")
 files
 ```
@@ -110,13 +106,13 @@ files
 Using tximport package to load Salmon data:
 ```{r}
 names(files) <- metadata$Samples
-TxDb <- makeTxDbFromGFF(file = "genes_19.gtf.gz")
+TxDb <- makeTxDbFromGFF(file = "genes_92_19.gtf.gz")
 k <- keys(TxDb, keytype = "TXNAME")
 tx2gene <- select(TxDb, k, "GENEID", "TXNAME")
 head(tx2gene)
 ```
 ```{r}
-txi <- tximport(files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = TRUE)
+txi <- tximport(files, type = "salmon", tx2gene = tx2gene), ignoreTxVersion = TRUE)
 ```
 
 Let's construct a DESeqDataSet from the txi object and sample information in metadata:
@@ -134,7 +130,6 @@ keep <- rowSums(counts(ddsTxi)) >= 10
 ddsTxi <- ddsTxi[keep,]
 dim(counts(ddsTxi))
 ```
-
 ## Collapsing technical replicates
 
 We have technical replicates for each individual:
@@ -144,13 +139,11 @@ ddsTxi$Samples <- factor(c("Ctl1", "Ctl1", "Ctl2", "Ctl2", "VAN-011", "VAN-011",
 ddsTxi$Run <- paste0("run",1:12)
 colData(ddsTxi)
 ```
-
 ```{r}
 #sum up technical replicates
 ddsTxi <- collapseReplicates(ddsTxi, ddsTxi$Samples, ddsTxi$Run)
 colData(ddsTxi)
 ```
-
 ## Differential expression
 
 ```{r}
@@ -165,19 +158,14 @@ multidensity( counts(ddsTxi, normalized = T),
               xlab="mean counts", xlim=c(0, 1000))
 ```
 
-
 ```{r}
 #adjusted p-value threshold
 res05 <- results(ddsTxi, alpha=0.05)
 summary(res05)
 ```
-
-Only 59 genes are up-regulated, while 43 are down-regulated.
-
 ```{r}
 sum(res05$padj < 0.05, na.rm=TRUE)
 ```
-
 p–value histogram of “correctly” computed p–values will have a rectangular shape with a peak at 0.
 
 Examine plot of p-values:
@@ -214,7 +202,7 @@ FDR.res <- fdrtool(res$stat, statistic= "normal", plot = T)
 ```{r}
 FDR.res$param[1, "sd"]
 ```
-Interestingly the estimated null model variance is 0.6727424, which is lower than 1, the theoretical one.
+Interestingly the estimated null model variance is 0.6626602, which is lower than 1, the theoretical one.
 
 We now add the new BH–adjusted p–values values to the results data frame.
 ```{r}
@@ -233,7 +221,7 @@ Let's check the number of DE genes now:
 ```{r}
 sum(res$padj < 0.05, na.rm=TRUE)
 ```
-We have 406 DE genes at fdr level 0.05.
+We have 215 DE genes at fdr level 0.05.
 
 ## Log fold change shrinkage for visualization and ranking
 
@@ -253,7 +241,6 @@ The function plotMA shows the log2 fold changes attributable to a given variable
 ```{r}
 plotMA(res, alpha = 0.05, ylim=c(-12,12))
 ```
-
 It is more useful visualize the MA-plot for the shrunken log2 fold changes, which remove the noise associated with log2 fold changes from low count genes without requiring arbitrary filtering thresholds.
 (The large fold changes from genes with lots of statistical information are not shrunk, while the imprecise fold changes are shrunk).
 ```{r}
@@ -334,7 +321,7 @@ head(hgnc_genes)
 results %>% filter(!ensgene %in% hgnc_genes$ensembl_gene_id)
 ```
 ```{r}
-write.csv(as.data.frame(results), file="~/RNA-seq_Cynthia/pipeline_1.csv")
+write.csv(as.data.frame(results), file="~/RNA-seq_Cynthia/pipeline_1_clean.csv")
 
 results_present <- results %>% filter(ensgene %in% hgnc_genes$ensembl_gene_id)
 
@@ -342,100 +329,13 @@ colnames(hgnc_genes)[1] <- "ensgene"
 x <- hgnc_genes %>% dplyr::select(ensgene, hgnc_symbol)
 results_joined <- left_join(results_present, x)
 
-write.csv(as.data.frame(results_joined), file="~/RNA-seq_Cynthia/pipeline_1_hgnc.csv")
+write.csv(as.data.frame(results_joined), file="~/RNA-seq_Cynthia/pipeline_1_hgnc_clean.csv")
 ```
-
-In limma we found only 21 DE genes. Among them 17 are present here: OASL, LRRC32, MEGF9, GSTM1, CYP4F29P, CPNE1, APOBEC3B, CD151, ZNF232, CXCR4, CHI3L2, DGKQ, ZNF215, PRKACB, CNTNAP1, SPARC, TRIT1.
-
-## Gene ontology enrichment analysis
-
 ```{r}
-#406 DE genes which we saved to pipeline_1.csv
-sigGenes <- rownames(subset(res, padj < 0.05))
-
-anno <- AnnotationDbi::select(org.Hs.eg.db, 
-               keys=rownames(res), 
-              columns=c("SYMBOL","SYMBOL", "GENENAME"),
-              keytype="ENSEMBL")
-
-#using another annotation here, but almost the same as biomart
-anSig <- as.data.frame(subset(anno, ENSEMBL %in% sigGenes))
-
-head(anSig)
-```
-
-We first get average gene expressions for each of the genes and then find non–DE genes that show a similar expression as the DE–genes. These genes are then our background (for gene set enrichment analysis).
-
-```{r warning=FALSE}
-overallBaseMean <- as.matrix(res[, "baseMean", drop = F])
-
-sig_idx <- match(anSig$ENSEMBL, rownames(overallBaseMean))
-backG <- c()
-
-for(i in sig_idx){
-  ind <- genefinder(overallBaseMean, i, 10, method = "manhattan")[[1]]$indices
-  backG <- c(backG, ind)
-
-}
-
-backG <- unique(backG)
-backG <- rownames(overallBaseMean)[backG]
-```
-
-We now remove DE genes from background and the get the total number of genes in the background.
-```{r}
-backG <- setdiff(backG,  anSig$ENSEMBL)
-length(backG)
-```
-
-Plotting the density of the average expressions:
-```{r}
-multidensity( list( 
-       all= log2(res[,"baseMean"]) ,
-       foreground =log2(res[anSig$ENSEMBL, "baseMean"]), 
-       background =log2(res[backG, "baseMean"])), 
-     xlab="log2 mean normalized counts", main = "Matching for enrichment analysis")
-```
-
-Now let's try topGO.
-
-We first create a factor alg which indicates for every gene in our universe (union of background and DE-genes), whether it is differentially expressed or not. It has the ENSEMBL ID’s of the genes in our universe as names and contains 1 if the gene is DE and 0 otherwise.
-```{r}
-onts = c( "MF", "BP", "CC" )
-
-geneIDs = rownames(overallBaseMean)
-inUniverse = geneIDs %in% c(anSig$ENSEMBL,  backG) 
-inSelection =  geneIDs %in% anSig$ENSEMBL 
-alg <- factor( as.integer( inSelection[inUniverse] ) )
-names(alg) <- geneIDs[inUniverse]
-```
-
-Here we run two common tests: an ordinary Fisher test for every GO category, and the “elim” algorithm, which tries to incorporate the hierarchical structure of the GO and to “decorrelate” it.
-
-```{r}
-#prepare the data
-tgd <- new("topGOdata", ontology="BP", allGenes = alg, nodeSize=5,
-                 annot=annFUN.org, mapping="org.Hs.eg.db", ID = "ensembl" )
-
-#run tests
-resultTopGO.elim <- runTest(tgd, algorithm = "elim", statistic = "Fisher" )
-resultTopGO.classic <- runTest(tgd, algorithm = "classic", statistic = "Fisher" )
-
-#results
-GO_result_table <- GenTable( tgd, Fisher.elim = resultTopGO.elim, Fisher.classic = resultTopGO.classic, 
-                          orderBy = "Fisher.classic" , topNodes = 200)
-```
-
-Best Fisher elim results:
-```{r}
-elim_res <- GO_result_table %>%
-  dplyr::filter(Fisher.elim < 0.05) %>%
-  dplyr::select(Term, Fisher.elim)
-
-elim_res
-```
-
-```{r}
-write.csv(GO_result_table, file = "~/RNA-seq_Cynthia/topGOResults.csv")
+not_clean <- read.csv("~/RNA-seq_Cynthia/pipeline_1_hgnc.csv")
+clean <- read.csv("~/RNA-seq_Cynthia/pipeline_1_hgnc_clean.csv")
+x_not_clean <- not_clean$hgnc_symbol
+x_clean <- clean$hgnc_symbol
+c <- intersect(x_clean, x_not_clean)
 ```
 
