@@ -7,6 +7,8 @@ RNA-seq analysis with DESeq2
 ============================
 
 ``` r
+suppressMessages(suppressWarnings(library(AnnotationDbi)))
+suppressMessages(suppressWarnings(library(org.Hs.eg.db)))
 suppressMessages(suppressWarnings(library(dplyr)))
 suppressMessages(suppressWarnings(library(knitr)))
 suppressMessages(suppressWarnings(library(tximport)))
@@ -26,6 +28,8 @@ suppressMessages(suppressWarnings(library(biomaRt)))
 suppressMessages(suppressWarnings(library(gplots)))
 suppressMessages(suppressWarnings(library(geneplotter)))
 suppressMessages(suppressWarnings(library(fdrtool)))
+suppressMessages(suppressWarnings(library(genefilter)))
+suppressMessages(suppressWarnings(library(topGO)))
 ```
 
 Running RNAcocktail with SALMON-SMEM
@@ -715,3 +719,224 @@ write.csv(as.data.frame(results_joined), file="~/RNA-seq_Cynthia/pipeline_1_hgnc
 ```
 
 In limma we found only 21 DE genes. Among them 17 are present here: OASL, LRRC32, MEGF9, GSTM1, CYP4F29P, CPNE1, APOBEC3B, CD151, ZNF232, CXCR4, CHI3L2, DGKQ, ZNF215, PRKACB, CNTNAP1, SPARC, TRIT1.
+
+Gene ontology enrichment analysis
+---------------------------------
+
+``` r
+#406 DE genes which we saved to pipeline_1.csv
+sigGenes <- rownames(subset(res, padj < 0.05))
+
+anno <- AnnotationDbi::select(org.Hs.eg.db, 
+               keys=rownames(res), 
+              columns=c("SYMBOL","SYMBOL", "GENENAME"),
+              keytype="ENSEMBL")
+```
+
+    ## 'select()' returned 1:many mapping between keys and columns
+
+``` r
+#using another annotation here, but almost the same as biomart
+anSig <- as.data.frame(subset(anno, ENSEMBL %in% sigGenes))
+
+head(anSig)
+```
+
+    ##             ENSEMBL  SYMBOL                                 GENENAME
+    ## 144 ENSG00000007038  PRSS21                      protease, serine 21
+    ## 197 ENSG00000008517    IL32                           interleukin 32
+    ## 357 ENSG00000021300 PLEKHB1 pleckstrin homology domain containing B1
+    ## 528 ENSG00000043514   TRIT1            tRNA isopentenyltransferase 1
+    ## 722 ENSG00000059804  SLC2A3         solute carrier family 2 member 3
+    ## 734 ENSG00000060709  RIMBP2                   RIMS binding protein 2
+
+We first get average gene expressions for each of the genes and then find non–DE genes that show a similar expression as the DE–genes. These genes are then our background (for gene set enrichment analysis).
+
+``` r
+overallBaseMean <- as.matrix(res[, "baseMean", drop = F])
+
+sig_idx <- match(anSig$ENSEMBL, rownames(overallBaseMean))
+backG <- c()
+
+for(i in sig_idx){
+  ind <- genefinder(overallBaseMean, i, 10, method = "manhattan")[[1]]$indices
+  backG <- c(backG, ind)
+
+}
+
+backG <- unique(backG)
+backG <- rownames(overallBaseMean)[backG]
+```
+
+We now remove DE genes from background and the get the total number of genes in the background.
+
+``` r
+backG <- setdiff(backG,  anSig$ENSEMBL)
+length(backG)
+```
+
+    ## [1] 3095
+
+Plotting the density of the average expressions:
+
+``` r
+multidensity( list( 
+       all= log2(res[,"baseMean"]) ,
+       foreground =log2(res[anSig$ENSEMBL, "baseMean"]), 
+       background =log2(res[backG, "baseMean"])), 
+     xlab="log2 mean normalized counts", main = "Matching for enrichment analysis")
+```
+
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-42-1.png)
+
+Now let's try topGO.
+
+We first create a factor alg which indicates for every gene in our universe (union of background and DE-genes), whether it is differentially expressed or not. It has the ENSEMBL ID’s of the genes in our universe as names and contains 1 if the gene is DE and 0 otherwise.
+
+``` r
+onts = c( "MF", "BP", "CC" )
+
+geneIDs = rownames(overallBaseMean)
+inUniverse = geneIDs %in% c(anSig$ENSEMBL,  backG) 
+inSelection =  geneIDs %in% anSig$ENSEMBL 
+alg <- factor( as.integer( inSelection[inUniverse] ) )
+names(alg) <- geneIDs[inUniverse]
+```
+
+Here we run two common tests: an ordinary Fisher test for every GO category, and the “elim” algorithm, which tries to incorporate the hierarchical structure of the GO and to “decorrelate” it.
+
+``` r
+#prepare the data
+tgd <- new("topGOdata", ontology="BP", allGenes = alg, nodeSize=5,
+                 annot=annFUN.org, mapping="org.Hs.eg.db", ID = "ensembl" )
+```
+
+    ## 
+    ## Building most specific GOs .....
+
+    ##  ( 5025 GO terms found. )
+
+    ## 
+    ## Build GO DAG topology ..........
+
+    ##  ( 9084 GO terms and 20789 relations. )
+
+    ## 
+    ## Annotating nodes ...............
+
+    ##  ( 2348 genes annotated to the GO terms. )
+
+``` r
+#run tests
+resultTopGO.elim <- runTest(tgd, algorithm = "elim", statistic = "Fisher" )
+```
+
+    ## 
+    ##           -- Elim Algorithm -- 
+    ## 
+    ##       the algorithm is scoring 2668 nontrivial nodes
+    ##       parameters: 
+    ##           test statistic: fisher
+    ##           cutOff: 0.01
+
+    ## 
+    ##   Level 16:  3 nodes to be scored    (0 eliminated genes)
+
+    ## 
+    ##   Level 15:  11 nodes to be scored   (9 eliminated genes)
+
+    ## 
+    ##   Level 14:  24 nodes to be scored   (21 eliminated genes)
+
+    ## 
+    ##   Level 13:  46 nodes to be scored   (22 eliminated genes)
+
+    ## 
+    ##   Level 12:  83 nodes to be scored   (77 eliminated genes)
+
+    ## 
+    ##   Level 11:  146 nodes to be scored  (113 eliminated genes)
+
+    ## 
+    ##   Level 10:  226 nodes to be scored  (194 eliminated genes)
+
+    ## 
+    ##   Level 9:   304 nodes to be scored  (234 eliminated genes)
+
+    ## 
+    ##   Level 8:   367 nodes to be scored  (334 eliminated genes)
+
+    ## 
+    ##   Level 7:   436 nodes to be scored  (433 eliminated genes)
+
+    ## 
+    ##   Level 6:   419 nodes to be scored  (460 eliminated genes)
+
+    ## 
+    ##   Level 5:   323 nodes to be scored  (546 eliminated genes)
+
+    ## 
+    ##   Level 4:   176 nodes to be scored  (608 eliminated genes)
+
+    ## 
+    ##   Level 3:   84 nodes to be scored   (711 eliminated genes)
+
+    ## 
+    ##   Level 2:   19 nodes to be scored   (750 eliminated genes)
+
+    ## 
+    ##   Level 1:   1 nodes to be scored    (750 eliminated genes)
+
+``` r
+resultTopGO.classic <- runTest(tgd, algorithm = "classic", statistic = "Fisher" )
+```
+
+    ## 
+    ##           -- Classic Algorithm -- 
+    ## 
+    ##       the algorithm is scoring 2668 nontrivial nodes
+    ##       parameters: 
+    ##           test statistic: fisher
+
+``` r
+#results
+GO_result_table <- GenTable( tgd, Fisher.elim = resultTopGO.elim, Fisher.classic = resultTopGO.classic, 
+                          orderBy = "Fisher.classic" , topNodes = 200)
+```
+
+Best Fisher elim results:
+
+``` r
+elim_res <- GO_result_table %>%
+  dplyr::filter(Fisher.elim < 0.05) %>%
+  dplyr::select(Term, Fisher.elim)
+
+elim_res
+```
+
+    ##                                           Term Fisher.elim
+    ## 1        cellular response to interferon-gamma     0.00622
+    ## 2                regulation of immune response     0.00424
+    ## 3                 leukocyte cell-cell adhesion     0.04938
+    ## 4                           cell-cell adhesion     0.00268
+    ## 5                         leukocyte activation     0.00095
+    ## 6  immune response-activating cell surface ...     0.00341
+    ## 7  positive regulation of cytokine-mediated...     0.00190
+    ## 8  natural killer cell mediated cytotoxicit...     0.00041
+    ## 9  negative regulation of protein ubiquitin...     0.00129
+    ## 10 regulation of transcription from RNA pol...     0.00940
+    ## 11 negative regulation of cell proliferatio...     0.00013
+    ## 12     adiponectin-activated signaling pathway     0.00014
+    ## 13 ER-associated misfolded protein cataboli...     0.00018
+    ## 14 positive regulation of nucleotide-bindin...     0.00018
+    ## 15 negative regulation of inclusion body as...     0.00018
+    ## 16 negative regulation of extrinsic apoptot...     0.00018
+    ## 17 regulation of proteasomal ubiquitin-depe...     0.01348
+    ## 18      regulation of mitotic spindle assembly     0.00041
+    ## 19 negative regulation of viral release fro...     0.00043
+    ## 20       cellular response to hormone stimulus     0.01461
+    ## 21                     humoral immune response     0.01479
+
+``` r
+write.csv(GO_result_table, file = "~/RNA-seq_Cynthia/topGOResults.csv")
+```
