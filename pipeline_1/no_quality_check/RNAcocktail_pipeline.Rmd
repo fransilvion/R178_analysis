@@ -40,6 +40,7 @@ suppressMessages(suppressWarnings(library(topGO)))
 ## Running RNAcocktail with SALMON-SMEM
 
 Donwloading human transcriptome and gtf reference file (genome version 19):
+
 ```{bash}
 ##downloading a transcriptome
 #curl ftp://ftp.ensembl.org/pub/release-67/fasta/homo_sapiens/cdna/Homo_sapiens.GRCh37.67.cdna.all.fa.gz -o #human_transcriptome_19.fa.gz
@@ -108,6 +109,7 @@ files
 ```
 
 Using tximport package to load Salmon data:
+
 ```{r}
 names(files) <- metadata$Samples
 TxDb <- makeTxDbFromGFF(file = "genes_19.gtf.gz")
@@ -120,6 +122,7 @@ txi <- tximport(files, type = "salmon", tx2gene = tx2gene, ignoreTxVersion = TRU
 ```
 
 Let's construct a DESeqDataSet from the txi object and sample information in metadata:
+
 ```{r}
 ddsTxi <- DESeqDataSetFromTximport(txi,
                                    colData = metadata,
@@ -129,6 +132,7 @@ ddsTxi <- DESeqDataSetFromTximport(txi,
 ## Pre-filtering
 
 Filtering of low-expressed genes
+
 ```{r}
 keep <- rowSums(counts(ddsTxi)) >= 10
 ddsTxi <- ddsTxi[keep,]
@@ -160,6 +164,7 @@ res <- results(ddsTxi, name="Affected_1_vs_0")
 res
 ```
 Let's plot the densities of counts for the different samples. 
+
 ```{r}
 multidensity( counts(ddsTxi, normalized = T),
               xlab="mean counts", xlim=c(0, 1000))
@@ -181,6 +186,7 @@ sum(res05$padj < 0.05, na.rm=TRUE)
 p–value histogram of “correctly” computed p–values will have a rectangular shape with a peak at 0.
 
 Examine plot of p-values:
+
 ```{r}
 hist(res$pvalue, breaks=50, col="grey")
 ```
@@ -203,25 +209,30 @@ res <- res[ !is.na(res$pvalue), ]
 ```
 
 We now remove the original adjusted p–values, since we will add the corrected ones later on.
+
 ```{r}
 res <- res[, -which(names(res) == "padj")]
 ```
 
 We can now use z–scores returned by DESeq2as input to fdrtool to re–estimate the p–values.
+
 ```{r}
 FDR.res <- fdrtool(res$stat, statistic= "normal", plot = T)
 ```
 ```{r}
 FDR.res$param[1, "sd"]
 ```
+
 Interestingly the estimated null model variance is 0.6727424, which is lower than 1, the theoretical one.
 
 We now add the new BH–adjusted p–values values to the results data frame.
+
 ```{r}
 res[,"padj"]  <- p.adjust(FDR.res$pval, method = "BH")
 ```
 
 We can now plot the histogram of the “correct” p–values.
+
 ```{r}
 hist(FDR.res$pval, col = "royalblue4", 
      main = "Correct null model", xlab = "CORRECTED p-values")
@@ -230,14 +241,17 @@ hist(FDR.res$pval, col = "royalblue4",
 Now everything is great. We have correct form of p-value distribution. 
 
 Let's check the number of DE genes now:
+
 ```{r}
 sum(res$padj < 0.05, na.rm=TRUE)
 ```
+
 We have 406 DE genes at fdr level 0.05.
 
 ## Log fold change shrinkage for visualization and ranking
 
 Shrinkage of effect size (LFC estimates) is useful for visualization and ranking of genes. To shrink the LFC, we pass the dds object to the function lfcShrink. Below we specify to use the apeglm method for effect size shrinkage (Zhu, Ibrahim, and Love 2018), which improves on the previous estimator.
+
 ```{r}
 resultsNames(ddsTxi)
 ```
@@ -256,12 +270,15 @@ plotMA(res, alpha = 0.05, ylim=c(-12,12))
 
 It is more useful visualize the MA-plot for the shrunken log2 fold changes, which remove the noise associated with log2 fold changes from low count genes without requiring arbitrary filtering thresholds.
 (The large fold changes from genes with lots of statistical information are not shrunk, while the imprecise fold changes are shrunk).
+
 ```{r}
 plotMA(resLFC, ylim=c(-4,4), main = "apeglm")
 ```
+
 We probably see the plot like this, because nearly all genes have no change of expression and there is little to no variation across replicates (so near technical replication); the same pattern was found by limma. And we have small number of genes with very large fold changes (see the above plot). 
 
 We can do LFC shrinkage with different methods, but apeglm is considered to be better (I didn't go deep into this). For comparison shrinkage with other methods:
+
 ```{r}
 resLFCnormal <- lfcShrink(ddsTxi, coef="Affected_1_vs_0", type="normal")
 plotMA(resLFCnormal, ylim=c(-4,4), main = "normal")
@@ -272,17 +289,21 @@ plotMA(resLFCashr, ylim=c(-4,4), main = "ashr")
 ```
 
 Count plot of one gene with the lowest adjusted (multiple test correction) pvalue (remember, 0 is unaffected, 1 is affected):
+
 ```{r}
 plotCounts(ddsTxi, gene=which.min(res$padj), intgroup="Affected")
 ```
+
 (set returnData=TRUE for custom plots)
 
 ## Some pictures
 
 Let's visualize dispersion estimates (for each gene) of DESeq function:
+
 ```{r}
 plotDispEsts(ddsTxi, main="Dispersion plot")
 ```
+
 The black points are the dispersion estimates for each gene as obtained by considering the information from each gene separately. We have strong fluctuation of values around their true values, because we don't have enough samples here.
 
 Therefore, the red trend line is fitted, which shows the dispersions’ dependence on the mean, and then shrink each gene’s estimate towards the red line to obtain the final estimates (blue points) that are then used in the hypothesis test.
@@ -311,7 +332,9 @@ heatmap.2(as.matrix(sampleDists), key=F, trace="none",
           margin=c(10, 10), main="Sample Distance Matrix")
 legend(0.9,0.9, legend = unique(condition), col = c("#1B9E77", "#D95F02"), pch = 19)
 ```
+
 PCA plot:
+
 ```{r}
 plotPCA(rld, intgroup=c("Affected"))
 ```
@@ -319,6 +342,7 @@ plotPCA(rld, intgroup=c("Affected"))
 ## Write results to file
 
 order by adjusted pvalue
+
 ```{r}
 resOrdered <- res[order(res$padj),]
 results <- as.data.frame(resOrdered)
@@ -383,12 +407,14 @@ backG <- rownames(overallBaseMean)[backG]
 ```
 
 We now remove DE genes from background and the get the total number of genes in the background.
+
 ```{r}
 backG <- setdiff(backG,  anSig$ENSEMBL)
 length(backG)
 ```
 
 Plotting the density of the average expressions:
+
 ```{r}
 multidensity( list( 
        all= log2(res[,"baseMean"]) ,
@@ -400,6 +426,7 @@ multidensity( list(
 Now let's try topGO.
 
 We first create a factor alg which indicates for every gene in our universe (union of background and DE-genes), whether it is differentially expressed or not. It has the ENSEMBL ID’s of the genes in our universe as names and contains 1 if the gene is DE and 0 otherwise.
+
 ```{r}
 onts = c( "MF", "BP", "CC" )
 
@@ -427,6 +454,7 @@ GO_result_table <- GenTable( tgd, Fisher.elim = resultTopGO.elim, Fisher.classic
 ```
 
 Best Fisher elim results:
+
 ```{r}
 elim_res <- GO_result_table %>%
   dplyr::filter(Fisher.elim < 0.05) %>%

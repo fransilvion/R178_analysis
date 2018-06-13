@@ -479,7 +479,9 @@ It is more useful visualize the MA-plot for the shrunken log2 fold changes, whic
 plotMA(resLFC, ylim=c(-4,4), main = "apeglm")
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-27-1.png) We probably see the plot like this, because nearly all genes have no change of expression and there is little to no variation across replicates (so near technical replication); the same pattern was found by limma. And we have small number of genes with very large fold changes (see the above plot).
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-27-1.png)
+
+We probably see the plot like this, because nearly all genes have no change of expression and there is little to no variation across replicates (so near technical replication); the same pattern was found by limma. And we have small number of genes with very large fold changes (see the above plot).
 
 We can do LFC shrinkage with different methods, but apeglm is considered to be better (I didn't go deep into this). For comparison shrinkage with other methods:
 
@@ -512,7 +514,9 @@ Count plot of one gene with the lowest adjusted (multiple test correction) pvalu
 plotCounts(ddsTxi, gene=which.min(res$padj), intgroup="Affected")
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-30-1.png) (set returnData=TRUE for custom plots)
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-30-1.png)
+
+(set returnData=TRUE for custom plots)
 
 Some pictures
 -------------
@@ -523,7 +527,9 @@ Let's visualize dispersion estimates (for each gene) of DESeq function:
 plotDispEsts(ddsTxi, main="Dispersion plot")
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-31-1.png) The black points are the dispersion estimates for each gene as obtained by considering the information from each gene separately. We have strong fluctuation of values around their true values, because we don't have enough samples here.
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-31-1.png)
+
+The black points are the dispersion estimates for each gene as obtained by considering the information from each gene separately. We have strong fluctuation of values around their true values, because we don't have enough samples here.
 
 Therefore, the red trend line is fitted, which shows the dispersions’ dependence on the mean, and then shrink each gene’s estimate towards the red line to obtain the final estimates (blue points) that are then used in the hypothesis test.
 
@@ -571,7 +577,9 @@ heatmap.2(as.matrix(sampleDists), key=F, trace="none",
 legend(0.9,0.9, legend = unique(condition), col = c("#1B9E77", "#D95F02"), pch = 19)
 ```
 
-![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-34-1.png) PCA plot:
+![](RNAcocktail_pipeline_files/figure-markdown_github/unnamed-chunk-34-1.png)
+
+PCA plot:
 
 ``` r
 plotPCA(rld, intgroup=c("Affected"))
