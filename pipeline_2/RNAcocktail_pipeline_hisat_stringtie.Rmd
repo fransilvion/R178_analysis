@@ -2,7 +2,7 @@
 title: "HISAT2-StringTie-Ballgown analysis"
 author: "German Novakovskiy"
 date: "June 18, 2018"
-output: github_document
+output: pdf_document
 ---
 
 ```{r setup, include=FALSE}
